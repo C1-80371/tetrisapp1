@@ -2,63 +2,94 @@ pipeline{
     agent any
     tools{
         jdk 'jdk17'
-        terraform 'terraform'
+        nodejs 'node16'
     }
-    stages{
-        stage('clean Workspace'){
+    environment {
+        SCANNER_HOME=tool 'sonar-scanner'
+    }
+    stages {
+        stage('clean workspace'){
             steps{
                 cleanWs()
             }
         }
-        stage('checkout from Git'){
+        stage('Checkout from Git'){
             steps{
-                git branch: 'main', url: 'https://github.com/Aj7Ay/TERRAFORM-JENKINS-CICD.git'
+                git branch: 'main', url: 'https://github.com/C1-80371/tetrisV2.git'
             }
-        }
-        stage('Terraform version'){
-             steps{
-                 sh 'terraform --version'
-                }
         }
         stage("Sonarqube Analysis "){
             steps{
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Terraform \
-                    -Dsonar.projectKey=Terraform '''
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=TetrisVersion2.0 \
+                    -Dsonar.projectKey=TetrisVersion2.0 '''
                 }
             }
         }
         stage("quality gate"){
            steps {
                 script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
                 }
             } 
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh "npm install"
+            }
+        }
+        stage('OWASP FS SCAN') {
+            steps {
+                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
         }
         stage('TRIVY FS SCAN') {
             steps {
                 sh "trivy fs . > trivyfs.txt"
             }
         }
-        stage('Excutable permission to userdata'){
-            steps{
-                sh 'chmod 777 website.sh'
+        stage('Docker Scout FS') {
+            steps {
+                script{
+                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
+                       sh 'docker-scout quickview fs://.'
+                       sh 'docker-scout cves fs://.'
+                   }
+                }   
             }
         }
-        stage('Terraform init'){
+        stage("Docker Build & Push"){
             steps{
-                sh 'terraform init'
+                script{
+                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){   
+                       sh "docker build -t tetrisv2 ."
+                       sh "docker tag tetrisv2 sardin2001/tetrisv2:latest "
+                       sh "docker push sardin2001/tetrisv2:latest "
+                    }
+                }
             }
         }
-        stage('Terraform plan'){
+        stage("TRIVY Image Scan"){
             steps{
-                sh 'terraform plan'
+                sh "trivy image sardin2001/tetrisv2:latest > trivyimage.txt" 
             }
         }
-        stage('Terraform apply'){
-            steps{
-                sh 'terraform ${action} --auto approve'
+        stage('Trigger manifest pipeline') {
+            steps {
+                build job: 'manifest', wait:true 
             }
+        }
+    }
+    post {
+     always {
+        emailext attachLog: true,
+            subject: "'${currentBuild.result}'",
+            body: "Project: ${env.JOB_NAME}<br/>" +
+                "Build Number: ${env.BUILD_NUMBER}<br/>" +
+                "URL: ${env.BUILD_URL}<br/>",
+            to: 'ray.kuldeep.kr@gmail.com',
+            attachmentsPattern: 'trivyfs.txt,trivyimage.txt,dependency-check-report.xml'
         }
     }
 }
